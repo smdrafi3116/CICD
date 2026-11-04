@@ -1,0 +1,143 @@
+
+name: Model Training CICD
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Enter the Pull Request number for the report"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  train-model:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pandas numpy matplotlib seaborn scikit-learn==1.7.2
+
+      - name: Install GitHub CLI with image attachment support
+        run: |
+          GH_VERSION="2.103.3"
+          curl -fsSL \
+            "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+            -o /tmp/gh.tar.gz
+          tar -xzf /tmp/gh.tar.gz -C /tmp
+          sudo install \
+            "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" \
+            /usr/local/bin/gh
+          gh --version
+
+      - name: Train model and generate reports
+        env:
+          MPLBACKEND: Agg
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MODEL_FILE="$(find . -type f -name 'train_model.py' \
+            -not -path './.git/*' -print -quit)"
+
+          if [ -z "$MODEL_FILE" ]; then
+            echo "::error::train_model.py was not found."
+            exit 1
+          fi
+
+          MODEL_DIR="$(dirname "$MODEL_FILE")"
+
+          if [ ! -f "$MODEL_DIR/iris.csv" ]; then
+            echo "::error::iris.csv must be in the same folder as train_model.py."
+            exit 1
+          fi
+
+          cd "$MODEL_DIR"
+
+          echo "Starting model training..."
+          python train_model.py
+
+          for file in scores.txt ConfusionMatrix.png FeatureImportance.png; do
+            if [ ! -s "$file" ]; then
+              echo "::error::$file was not generated."
+              exit 1
+            fi
+          done
+
+          {
+            echo "# Model Training Report"
+            echo
+            echo "## Model Evaluation Scores"
+            echo
+            echo '```text'
+            cat scores.txt
+            echo '```'
+            echo
+            echo "## Confusion Matrix"
+            echo
+            echo "![Confusion Matrix](ConfusionMatrix.png)"
+            echo
+            echo "## Feature Importance"
+            echo
+            echo "![Feature Importance](FeatureImportance.png)"
+          } > report.md
+
+          {
+            echo "# Model Training Results"
+            echo
+            echo '```text'
+            cat scores.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish complete report on Pull Request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "::error::A Pull Request number is required."
+            exit 1
+          fi
+
+          PR_URL="$(gh pr view "$PR_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json url --jq '.url')"
+
+          gh pr comment "$PR_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body-file report.md \
+            --attach ConfusionMatrix.png \
+            --attach FeatureImportance.png
+
+          echo
+          echo "Report successfully posted."
+          echo "Pull Request: $PR_URL"
+          echo "[Open complete model report]($PR_URL)" >> "$GITHUB_STEP_SUMMARY"
