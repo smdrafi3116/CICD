@@ -1,0 +1,95 @@
+
+name: Model Training CICD
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  train-model:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pandas numpy matplotlib seaborn scikit-learn
+
+      - name: Train model and prepare report
+        env:
+          MPLBACKEND: Agg
+        run: |
+          set -e
+
+          MODEL_FILE="$(find . -type f -name 'train_model.py' -not -path './.git/*' -print -quit)"
+
+          if [ -z "$MODEL_FILE" ]; then
+            echo "::error::train_model.py was not found in the repository."
+            exit 1
+          fi
+
+          MODEL_DIR="$(dirname "$MODEL_FILE")"
+
+          if [ ! -f "$MODEL_DIR/iris.csv" ]; then
+            echo "::error::iris.csv must be in the same folder as train_model.py."
+            exit 1
+          fi
+
+          mkdir -p model-report
+
+          echo "Starting model training..."
+
+          (
+            cd "$MODEL_DIR"
+            python train_model.py
+          )
+
+          for file in scores.txt ConfusionMatrix.png FeatureImportance.png; do
+            if [ ! -s "$MODEL_DIR/$file" ]; then
+              echo "::error::$file was not generated."
+              exit 1
+            fi
+          done
+
+          cp "$MODEL_DIR/scores.txt" model-report/
+          cp "$MODEL_DIR/ConfusionMatrix.png" model-report/
+          cp "$MODEL_DIR/FeatureImportance.png" model-report/
+
+          {
+            echo "# Model Training Report"
+            echo
+            echo "## Model Scores"
+            cat model-report/scores.txt
+            echo
+            echo "## Confusion Matrix"
+            echo "![Confusion Matrix](ConfusionMatrix.png)"
+            echo
+            echo "## Feature Importance"
+            echo "![Feature Importance](FeatureImportance.png)"
+          } > model-report/report.md
+
+      - name: Upload model training report
+        uses: actions/upload-artifact@v7
+        with:
+          name: model-training-report
+          path: model-report/
+          if-no-files-found: error
+          retention-days: 14
