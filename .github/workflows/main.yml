@@ -2,8 +2,10 @@
 name: Model Training CICD
 
 on:
-  pull_request:
   push:
+    branches:
+      - main
+  pull_request:
     branches:
       - main
 
@@ -56,7 +58,8 @@ jobs:
 
           echo "## Confusion Matrix and Feature Importance" > report1.md
 
-          cml publish ConfusionMatrix.png FeatureImportance.png --md >> report1.md
+          cml publish ConfusionMatrix.png --md >> report1.md
+          cml publish FeatureImportance.png --md >> report1.md
 
           cat report1.md >> report.md
 
